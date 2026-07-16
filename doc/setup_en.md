@@ -70,7 +70,14 @@ cd unitree_rl_mjlab
 pip install -e .
 ```
 
+If you hit an `AttributeError` mentioning `mjENBL_MULTICCD`, `mujoco` and
+`mujoco-warp` are installed at incompatible versions. Reinstall the project
+dependencies so `mujoco==3.5.0` matches `mujoco-warp==3.5.0`:
+
+```bash
+pip install -e . --upgrade --force-reinstall
+```
+
 ## Summary
 
 After completing the above steps, you are ready to run the related programs in the virtual environment. If you encounter any issues, refer to the official documentation of each component or check if the dependencies are installed correctly.
-

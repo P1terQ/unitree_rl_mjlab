@@ -70,7 +70,14 @@ cd unitree_rl_mjlab
 pip install -e .
 ```
 
+如果遇到 `mjENBL_MULTICCD` 相关的 `AttributeError`，说明 `mujoco` 和
+`mujoco-warp` 版本不匹配。重新安装仓库依赖，使 `mujoco==3.5.0` 与
+`mujoco-warp==3.5.0` 保持一致：
+
+```bash
+pip install -e . --upgrade --force-reinstall
+```
+
 ## 总结
 
 按照上述步骤完成后，您已经准备好在虚拟环境中运行相关程序。若遇到问题，请参考各组件的官方文档或检查依赖安装是否正确。
-

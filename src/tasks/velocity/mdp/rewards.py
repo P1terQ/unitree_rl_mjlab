@@ -7,7 +7,7 @@ import torch
 from mjlab.entity import Entity
 from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
-from mjlab.sensor import BuiltinSensor, ContactSensor
+from mjlab.sensor import BuiltinSensor, ContactSensor, RayCastSensor
 from mjlab.utils.lab_api.math import quat_apply_inverse
 from mjlab.utils.lab_api.string import (
   resolve_matching_names_values,
@@ -131,6 +131,58 @@ def angular_momentum_penalty(
   return angmom_magnitude_sq
 
 
+def base_height_exp(
+  env: ManagerBasedRlEnv,
+  target_height: float,
+  std: float,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Reward base height close to target using an exponential kernel."""
+  asset: Entity = env.scene[asset_cfg.name]
+  base_height = asset.data.root_link_pos_w[:, 2]
+  return torch.exp(-torch.square(base_height - target_height) / std**2)
+
+
+def base_height_l2(
+  env: ManagerBasedRlEnv,
+  target_height: float,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Penalize squared base-height error."""
+  asset: Entity = env.scene[asset_cfg.name]
+  return torch.square(asset.data.root_link_pos_w[:, 2] - target_height)
+
+
+def no_backward_on_forward_cmd(
+  env: ManagerBasedRlEnv,
+  command_name: str,
+  command_threshold: float,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Penalize backward base velocity when a forward command is active."""
+  asset: Entity = env.scene[asset_cfg.name]
+  command = env.command_manager.get_command(command_name)
+  assert command is not None
+  forward_cmd = command[:, 0] > command_threshold
+  backward_speed = torch.clamp(-asset.data.root_link_lin_vel_b[:, 0], min=0.0)
+  return backward_speed * forward_cmd.float()
+
+
+def joint_deviation_l2(
+  env: ManagerBasedRlEnv,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Penalize squared joint displacement from the default pose."""
+  asset: Entity = env.scene[asset_cfg.name]
+  return torch.sum(
+    torch.square(
+      asset.data.joint_pos[:, asset_cfg.joint_ids]
+      - asset.data.default_joint_pos[:, asset_cfg.joint_ids]
+    ),
+    dim=1,
+  )
+
+
 def feet_air_time(
   env: ManagerBasedRlEnv,
   sensor_name: str,
@@ -160,6 +212,21 @@ def feet_air_time(
   return reward
 
 
+def feet_stumble_swing(
+  env: ManagerBasedRlEnv,
+  sensor_name: str,
+  horizontal_ratio: float = 4.0,
+) -> torch.Tensor:
+  """Penalize contacts dominated by horizontal force, a stumble proxy."""
+  sensor: ContactSensor = env.scene[sensor_name]
+  data = sensor.data
+  assert data.force is not None
+  horizontal_force = torch.linalg.norm(data.force[..., :2], dim=-1)
+  vertical_force = torch.abs(data.force[..., 2])
+  stumble = horizontal_force > horizontal_ratio * vertical_force
+  return torch.any(stumble, dim=1).float()
+
+
 def feet_clearance(
   env: ManagerBasedRlEnv,
   target_height: float,
@@ -183,6 +250,58 @@ def feet_clearance(
       active = (total_command > command_threshold).float()
       cost = cost * active
   return cost
+
+
+def foot_landing_vel(
+  env: ManagerBasedRlEnv,
+  sensor_name: str,
+  asset_cfg: SceneEntityCfg = _DEFAULT_ASSET_CFG,
+) -> torch.Tensor:
+  """Penalize downward foot velocity at first contact."""
+  asset: Entity = env.scene[asset_cfg.name]
+  contact_sensor: ContactSensor = env.scene[sensor_name]
+  first_contact = contact_sensor.compute_first_contact(dt=env.step_dt).float()
+  foot_vel_z = asset.data.site_lin_vel_w[:, asset_cfg.site_ids, 2]
+  downward_vel = torch.clamp(-foot_vel_z, min=0.0)
+  return torch.sum(torch.square(downward_vel) * first_contact, dim=1)
+
+
+def feet_near_terrain_edge(
+  env: ManagerBasedRlEnv,
+  sensor_name: str,
+  asset_cfg: SceneEntityCfg,
+  scan_shape: tuple[int, int],
+  edge_threshold: float,
+  foot_radius: float,
+) -> torch.Tensor:
+  """Approximate old edge-awareness by comparing feet to sharp height-scan cells."""
+  sensor: RayCastSensor = env.scene[sensor_name]
+  heights = sensor.data.frame_pos_w[:, :, 2:3] - sensor.data.hit_pos_w[..., 2].view(
+    env.num_envs, sensor.num_frames, sensor.num_rays_per_frame
+  )
+  heights = heights.view(env.num_envs, *scan_shape)
+
+  edge_mask = torch.zeros_like(heights, dtype=torch.bool)
+  edge_mask[:, 1:, :] |= torch.abs(heights[:, 1:, :] - heights[:, :-1, :]) > edge_threshold
+  edge_mask[:, :-1, :] |= torch.abs(heights[:, 1:, :] - heights[:, :-1, :]) > edge_threshold
+  edge_mask[:, :, 1:] |= torch.abs(heights[:, :, 1:] - heights[:, :, :-1]) > edge_threshold
+  edge_mask[:, :, :-1] |= torch.abs(heights[:, :, 1:] - heights[:, :, :-1]) > edge_threshold
+
+  edge_points = sensor.data.hit_pos_w.view(
+    env.num_envs, sensor.num_frames, sensor.num_rays_per_frame, 3
+  )[:, 0, :, :2]
+  edge_mask_flat = edge_mask.reshape(env.num_envs, sensor.num_rays_per_frame)
+  edge_points = torch.where(
+    edge_mask_flat.unsqueeze(-1),
+    edge_points,
+    torch.full_like(edge_points, 1.0e6),
+  )
+
+  asset: Entity = env.scene[asset_cfg.name]
+  foot_xy = asset.data.site_pos_w[:, asset_cfg.site_ids, :2]
+  distances = torch.cdist(foot_xy, edge_points)
+  nearest_edge = torch.min(distances, dim=-1).values
+  return torch.sum((nearest_edge < foot_radius).float(), dim=1)
 
 
 def feet_gait(
@@ -425,4 +544,3 @@ def stand_still(
             scale = (total_command <= command_threshold).float()
             reward *= scale
     return reward
-

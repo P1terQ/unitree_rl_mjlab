@@ -1,5 +1,6 @@
 """Unitree A2 constants."""
 
+from copy import deepcopy
 from pathlib import Path
 
 import mujoco
@@ -8,7 +9,7 @@ from src import SRC_PATH
 from mjlab.actuator import BuiltinPositionActuatorCfg
 from mjlab.entity import EntityArticulationInfoCfg, EntityCfg
 from mjlab.utils.actuator import ElectricActuator, reflected_inertia
-from mjlab.utils.os import update_assets
+from src.assets.robots.assets import update_assets
 from mjlab.utils.spec_config import CollisionCfg
 
 ##
@@ -132,10 +133,10 @@ def get_a2_robot_cfg() -> EntityCfg:
   the config is shared across multiple places.
   """
   return EntityCfg(
-    init_state=INIT_STATE,
-    collisions=(FULL_COLLISION,),
+    init_state=deepcopy(INIT_STATE),
+    collisions=(deepcopy(FULL_COLLISION),),
     spec_fn=get_spec,
-    articulation=A2_ARTICULATION,
+    articulation=deepcopy(A2_ARTICULATION),
   )
 
 if __name__ == "__main__":

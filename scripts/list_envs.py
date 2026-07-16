@@ -1,7 +1,14 @@
 """Script to list mjlab environments."""
 
+import sys
+from pathlib import Path
+
 import tyro
 from prettytable import PrettyTable
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+  sys.path.insert(0, str(REPO_ROOT))
 
 import mjlab
 import mjlab.tasks  # noqa: F401

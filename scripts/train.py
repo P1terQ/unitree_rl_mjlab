@@ -129,6 +129,9 @@ class TrainConfig:
   def from_task(task_id: str) -> "TrainConfig":
     env_cfg = load_env_cfg(task_id)
     agent_cfg = load_rl_cfg(task_id)
+    env_cfg.scene.num_envs = 4096
+    agent_cfg.logger = "tensorboard"
+    agent_cfg.upload_model = False
     return TrainConfig(env=env_cfg, agent=agent_cfg)
 
 

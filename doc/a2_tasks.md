@@ -51,7 +51,7 @@ LocoScan actor scan 使用 IsaacGym A2 LocoScan 的主要噪声参数：per-step
 
 ```bash
 /home/ustc/anaconda3/envs/g1_mjlab/bin/python scripts/train.py Unitree-A2-LocoScan \
-  --env.scene.num-envs=4096
+  --env.scene.num-envs=4096 --agent.logger=tensorboard
 ```
 
 无 CUDA 或只做快速 smoke test 时，可降低环境数量和迭代数：

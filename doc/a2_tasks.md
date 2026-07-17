@@ -32,6 +32,12 @@
 
 LocoScan 的地形扫描网格为 14 x 11，共 154 条 ray；actor 的高度扫描带噪声和延迟，critic 使用无扰动扫描和 estimator target。
 
+LocoScan 地形比例对齐 IsaacGym 原配置：smooth slope `0.15`、rough `0.15`、stairs up `0.2`、stairs down `0.2`、discrete obstacles `0.2`、wide step proxy `0.1`，不包含 stepping stones。地形仍使用 MJLab/MuJoCo 生成逻辑，但 slope、rough、stairs、discrete 和 wide step 的主要参数参考 IsaacGym `a2_locoscan`：slope 上限 `0.6`，rough 高度 `[-0.1, 0.1]`，stairs 高度 `0.05-0.23`，discrete 尺寸 `1.0-2.0m`/数量 `20`，wide step 高度 `0.1-0.3`。
+
+Terrain curriculum 在训练时按列分配地形类型、按行增加难度；20 列按上述比例分配，10 行的 difficulty 从低到高。训练启动时会打印并保存 `terrain_layout.txt` 到本次 run 目录，便于检查列分布和初始地形等级；env 创建后还会保存 `terrain_distribution_initial.txt`，记录当前训练环境实际落到的地形列和 level 数量。
+
+LocoScan actor scan 使用 IsaacGym A2 LocoScan 的主要噪声参数：per-step XY/Z 噪声、per-env Z bias、scan tilt、5-9 步延迟以及 `2 -> 6` 地形等级的 noise curriculum。critic scan 保持 clean。MJLab 中基于 raycast 采样，因此 XY 噪声使用局部高度梯度近似，不会与 IsaacGym heightfield 索引采样逐点完全相同。
+
 ## 训练命令
 
 训练 A2 Rough：

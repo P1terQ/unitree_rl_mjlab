@@ -14,7 +14,6 @@ from rsl_rl.modules.distribution import Distribution
 from rsl_rl.models import MLPModel
 from rsl_rl.storage import RolloutStorage
 from rsl_rl.utils import (
-  compile_model,
   resolve_callable,
   resolve_nn_activation,
   resolve_obs_groups,
@@ -23,6 +22,15 @@ from rsl_rl.utils import (
 from tensordict import TensorDict
 
 from mjlab.rl.runner import MjlabOnPolicyRunner
+
+try:
+  from rsl_rl.utils import compile_model
+except ImportError:
+
+  def compile_model(model: nn.Module, mode: str | None = None) -> nn.Module:
+    if mode is None:
+      return model
+    return torch.compile(model, mode=mode)
 
 
 class ActorCriticLocoScan(MLPModel):
@@ -208,6 +216,8 @@ class PPOLocoScan(PPO):
       learning_rate=learning_rate,
       **kwargs,
     )
+    self._raw_actor = actor
+    self._raw_critic = critic
     self.estimator_loss_coef = estimator_loss_coef
     self.estimator_optimizer = resolve_optimizer(optimizer)(
       self._raw_actor.parameters(), lr=learning_rate

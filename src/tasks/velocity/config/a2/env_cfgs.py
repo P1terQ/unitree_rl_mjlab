@@ -1,6 +1,7 @@
 """Unitree A2 velocity environment configurations."""
 
 from dataclasses import dataclass
+import uuid
 
 from typing import Literal
 
@@ -8,6 +9,8 @@ from src.assets.robots import (
   get_a2_robot_cfg,
 )
 import mujoco
+import numpy as np
+import scipy.interpolate as interpolate
 import torch
 
 from mjlab.envs import ManagerBasedRlEnvCfg
@@ -18,16 +21,10 @@ from mjlab.managers.event_manager import EventTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.sensor import ContactMatch, ContactSensorCfg, GridPatternCfg, RayCastSensorCfg
 from mjlab.tasks.velocity.mdp import UniformVelocityCommandCfg
+import mjlab.terrains as terrain_gen
 from mjlab.terrains import TerrainGeneratorCfg
-from mjlab.terrains.config import (
-  discrete_obstacles,
-  hf_pyramid_slope,
-  hf_pyramid_slope_inv,
-  pyramid_stairs,
-  pyramid_stairs_inv,
-  random_rough,
-  stepping_stones,
-)
+from mjlab.terrains.heightfield_terrains import color_by_height
+from mjlab.terrains.terrain_generator import TerrainGeometry, TerrainOutput
 from mjlab.utils.noise import UniformNoiseCfg as Unoise
 
 from src.tasks.velocity.velocity_env_cfg import make_velocity_env_cfg
@@ -92,38 +89,181 @@ class LocoScanGridPatternCfg(GridPatternCfg):
     return local_offsets, local_directions
 
 
+@dataclass(kw_only=True)
+class CenteredHfRandomUniformTerrainCfg(terrain_gen.HfRandomUniformTerrainCfg):
+  """Random rough heightfield with the IsaacGym zero-height convention."""
+
+  def function(
+    self, difficulty: float, spec: mujoco.MjSpec, rng: np.random.Generator
+  ) -> TerrainOutput:
+    del difficulty
+    body = spec.body("terrain")
+
+    if self.border_width > 0 and self.border_width < self.horizontal_scale:
+      raise ValueError(
+        f"Border width ({self.border_width}) must be >= horizontal scale "
+        f"({self.horizontal_scale})"
+      )
+
+    if self.downsampled_scale is None:
+      downsampled_scale = self.horizontal_scale
+    elif self.downsampled_scale < self.horizontal_scale:
+      raise ValueError(
+        f"Downsampled scale must be >= horizontal scale: "
+        f"{self.downsampled_scale} < {self.horizontal_scale}"
+      )
+    else:
+      downsampled_scale = self.downsampled_scale
+
+    border_pixels = int(self.border_width / self.horizontal_scale)
+    width_pixels = int(self.size[0] / self.horizontal_scale)
+    length_pixels = int(self.size[1] / self.horizontal_scale)
+    noise = np.zeros((width_pixels, length_pixels), dtype=np.int16)
+
+    if border_pixels > 0:
+      inner_width_pixels = width_pixels - 2 * border_pixels
+      inner_length_pixels = length_pixels - 2 * border_pixels
+      terrain_size = (
+        inner_width_pixels * self.horizontal_scale,
+        inner_length_pixels * self.horizontal_scale,
+      )
+    else:
+      inner_width_pixels = width_pixels
+      inner_length_pixels = length_pixels
+      terrain_size = self.size
+
+    width_downsampled = int(terrain_size[0] / downsampled_scale)
+    length_downsampled = int(terrain_size[1] / downsampled_scale)
+    height_min = int(self.noise_range[0] / self.vertical_scale)
+    height_max = int(self.noise_range[1] / self.vertical_scale)
+    height_step = int(self.noise_step / self.vertical_scale)
+    height_range = np.arange(height_min, height_max + height_step, height_step)
+
+    height_field_downsampled = rng.choice(
+      height_range, size=(width_downsampled, length_downsampled)
+    )
+    x = np.linspace(0, terrain_size[0], width_downsampled)
+    y = np.linspace(0, terrain_size[1], length_downsampled)
+    func = interpolate.RectBivariateSpline(x, y, height_field_downsampled)
+    x_upsampled = np.linspace(0, terrain_size[0], inner_width_pixels)
+    y_upsampled = np.linspace(0, terrain_size[1], inner_length_pixels)
+    z_upsampled = np.rint(func(x_upsampled, y_upsampled)).astype(np.int16)
+
+    if border_pixels > 0:
+      noise[
+        border_pixels : -border_pixels if border_pixels else width_pixels,
+        border_pixels : -border_pixels if border_pixels else length_pixels,
+      ] = z_upsampled
+    else:
+      noise = z_upsampled
+
+    elevation_min = np.min(noise)
+    elevation_max = np.max(noise)
+    elevation_range = (
+      elevation_max - elevation_min if elevation_max != elevation_min else 1
+    )
+    max_physical_height = elevation_range * self.vertical_scale
+    base_thickness = max_physical_height * self.base_thickness_ratio
+    normalized_elevation = (noise - elevation_min) / elevation_range
+
+    unique_id = uuid.uuid4().hex
+    field = spec.add_hfield(
+      name=f"hfield_{unique_id}",
+      size=[
+        self.size[0] / 2,
+        self.size[1] / 2,
+        max_physical_height,
+        base_thickness,
+      ],
+      nrow=noise.shape[0],
+      ncol=noise.shape[1],
+      userdata=normalized_elevation.flatten().astype(np.float32).tolist(),
+    )
+
+    hfield_z_offset = elevation_min * self.vertical_scale
+    material_name = color_by_height(spec, noise, unique_id, normalized_elevation)
+    hfield_geom = body.add_geom(
+      type=mujoco.mjtGeom.mjGEOM_HFIELD,
+      hfieldname=field.name,
+      pos=[self.size[0] / 2, self.size[1] / 2, hfield_z_offset],
+      material=material_name,
+    )
+
+    center_x = width_pixels // 2
+    center_y = length_pixels // 2
+    patch_half_size = max(1, int(1.0 / self.horizontal_scale))
+    x0 = max(center_x - patch_half_size, 0)
+    x1 = min(center_x + patch_half_size, noise.shape[0])
+    y0 = max(center_y - patch_half_size, 0)
+    y1 = min(center_y + patch_half_size, noise.shape[1])
+    spawn_height = np.max(noise[x0:x1, y0:y1]) * self.vertical_scale
+    origin = np.array([self.size[0] / 2, self.size[1] / 2, spawn_height])
+
+    geom = TerrainGeometry(geom=hfield_geom, hfield=field)
+    return TerrainOutput(origin=origin, geometries=[geom], flat_patches=None)
+
+
 def make_a2_locoscan_terrain_cfg() -> TerrainGeneratorCfg:
   """Create a terrain mix matching the legacy A2 LocoScan proportions."""
   return TerrainGeneratorCfg(
     curriculum=True,
     size=(8.0, 8.0),
-    border_width=25.0,
-    border_height=0.01,
+    border_width=0.0,
+    border_height=0.0,
     num_rows=10,
     num_cols=20,
     sub_terrains={
-      "hf_pyramid_slope": hf_pyramid_slope(proportion=0.15, slope_range=(0.0, 0.7)),
-      "random_rough": random_rough(proportion=0.15),
-      "pyramid_stairs": pyramid_stairs(
-        proportion=0.2,
-        step_height_range=(0.01, 0.2),
-        step_width=0.3,
+      "hf_pyramid_slope_inv": terrain_gen.HfPyramidSlopedTerrainCfg(
+        proportion=0.1,
+        slope_range=(0.0, 0.6),
         platform_width=3.0,
-        border_width=1.0,
+        border_width=0.2,
+        horizontal_scale=0.1,
+        inverted=True,
       ),
-      "pyramid_stairs_inv": pyramid_stairs_inv(
-        proportion=0.2,
-        step_height_range=(0.01, 0.2),
-        step_width=0.3,
+      "hf_pyramid_slope": terrain_gen.HfPyramidSlopedTerrainCfg(
+        proportion=0.1,
+        slope_range=(0.0, 0.6),
         platform_width=3.0,
-        border_width=1.0,
+        border_width=0.2,
+        horizontal_scale=0.1,
       ),
-      "discrete_obstacles": discrete_obstacles(proportion=0.2),
-      "stepping_stones": stepping_stones(proportion=0.1),
-      # Keep the old "wide step" slot explicit; mjlab has no exact preset.
-      "wide_step_proxy": hf_pyramid_slope_inv(
-        proportion=0.0,
-        slope_range=(0.0, 0.7),
+      "random_rough": CenteredHfRandomUniformTerrainCfg(
+        proportion=0.15,
+        noise_range=(-0.05, 0.05),
+        noise_step=0.005,
+        downsampled_scale=0.2,
+        border_width=0.0,
+        horizontal_scale=0.1,
+      ),
+      "pyramid_stairs": terrain_gen.BoxPyramidStairsTerrainCfg(
+        proportion=0.2,
+        step_height_range=(0.05, 0.23),
+        step_width=0.35,
+        platform_width=3.0,
+      ),
+      "pyramid_stairs_inv": terrain_gen.BoxInvertedPyramidStairsTerrainCfg(
+        proportion=0.2,
+        step_height_range=(0.05, 0.23),
+        step_width=0.35,
+        platform_width=3.0,
+      ),
+      "discrete_obstacles": terrain_gen.HfDiscreteObstaclesTerrainCfg(
+        proportion=0.15,
+        obstacle_height_mode="fixed",
+        obstacle_width_range=(1.0, 2.0),
+        obstacle_height_range=(0.05, 0.2),
+        num_obstacles=20,
+        platform_width=3.0,
+        border_width=0.2,
+        horizontal_scale=0.1,
+      ),
+      # Approximate the legacy "wide step" terrain with wider pyramid stairs.
+      "wide_step_proxy": terrain_gen.BoxPyramidStairsTerrainCfg(
+        proportion=0.1,
+        step_height_range=(0.1, 0.3),
+        step_width=0.9,
+        platform_width=2.0,
       ),
     },
     add_lights=True,
@@ -242,7 +382,7 @@ def unitree_a2_rough_env_cfg(
         cfg.scene.terrain.terrain_generator.curriculum = False
         cfg.scene.terrain.terrain_generator.num_cols = 5
         cfg.scene.terrain.terrain_generator.num_rows = 5
-        cfg.scene.terrain.terrain_generator.border_width = 10.0
+        cfg.scene.terrain.terrain_generator.border_width = 0.0
 
   return cfg
 
@@ -313,14 +453,18 @@ def unitree_a2_locoscan_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg.scene.terrain.terrain_type = "generator"
   cfg.scene.terrain.terrain_generator = make_a2_locoscan_terrain_cfg()
   cfg.scene.terrain.max_init_terrain_level = 2
+  cfg.sim.mujoco.ccd_iterations = 50
+  cfg.sim.nconmax = 256
 
   for sensor in cfg.scene.sensors or ():
     if sensor.name == "terrain_scan":
       assert isinstance(sensor, RayCastSensorCfg)
       sensor.pattern = LocoScanGridPatternCfg()
       sensor.max_distance = 5.0
-      sensor.debug_vis = False
+      sensor.debug_vis = play
+      sensor.viz.show_rays = False
       sensor.viz.show_normals = False
+      sensor.viz.hit_sphere_radius = 0.12
 
   twist_cmd = cfg.commands["twist"]
   assert isinstance(twist_cmd, UniformVelocityCommandCfg)
@@ -359,12 +503,29 @@ def unitree_a2_locoscan_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       ),
     ),
     "height_scan": ObservationTermCfg(
-      func=mdp.locoscan_height_scan,
-      params={"sensor_name": "terrain_scan"},
-      noise=Unoise(n_min=-0.1, n_max=0.1),
-      delay_min_lag=5,
-      delay_max_lag=9,
-      delay_hold_prob=0.2,
+      func=mdp.LocoScanNoisyHeightScan,
+      params={
+        "sensor_name": "terrain_scan",
+        "scan_shape": (len(LOCOSCAN_POINTS_X), len(LOCOSCAN_POINTS_Y)),
+        "points_x": LOCOSCAN_POINTS_X,
+        "points_y": LOCOSCAN_POINTS_Y,
+        "per_step_xy_noise_std": 0.02,
+        "per_step_z_noise_std": 0.025,
+        "per_env_resampling_s": 7.0,
+        "per_env_noise_prob": 0.3,
+        "per_env_xy_noise_std": 0.05,
+        "per_env_z_noise_std": 0.05,
+        "scan_map_tilt_prob": 0.3,
+        "scan_map_tilt_max_rad": 0.07,
+        "delay_prob_start": 0.2,
+        "delay_prob_end": 0.8,
+        "delay_min_steps": 5,
+        "delay_max_steps": 9,
+        "noise_curriculum": True,
+        "noise_curriculum_start_level": 2,
+        "noise_curriculum_end_level": 6,
+        "enable_noise": not play,
+      },
     ),
   }
   critic_terms = {
@@ -493,6 +654,6 @@ def unitree_a2_locoscan_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       cfg.scene.terrain.terrain_generator.curriculum = False
       cfg.scene.terrain.terrain_generator.num_cols = 5
       cfg.scene.terrain.terrain_generator.num_rows = 5
-      cfg.scene.terrain.terrain_generator.border_width = 10.0
+      cfg.scene.terrain.terrain_generator.border_width = 0.0
 
   return cfg

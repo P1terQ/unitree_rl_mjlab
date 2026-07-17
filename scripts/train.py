@@ -8,6 +8,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal, cast
 
+import numpy as np
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
   sys.path.insert(0, str(REPO_ROOT))
@@ -22,6 +24,93 @@ from mjlab.utils.gpu import select_gpus
 from mjlab.utils.os import dump_yaml, get_checkpoint_path
 from mjlab.utils.torch import configure_torch_backends
 from mjlab.utils.wrappers import VideoRecorder
+
+
+def _format_terrain_layout(env_cfg: ManagerBasedRlEnvCfg) -> str | None:
+  terrain = env_cfg.scene.terrain
+  if terrain is None or terrain.terrain_generator is None:
+    return None
+  generator = terrain.terrain_generator
+  if not generator.sub_terrains:
+    return None
+
+  names = list(generator.sub_terrains.keys())
+  proportions = np.array(
+    [generator.sub_terrains[name].proportion for name in names], dtype=np.float64
+  )
+  proportions /= np.sum(proportions)
+  cumulative = np.cumsum(proportions)
+
+  lines = [
+    "Terrain layout",
+    f"  curriculum: {generator.curriculum}",
+    f"  rows: {generator.num_rows}",
+    f"  cols: {generator.num_cols}",
+    f"  difficulty_range: {generator.difficulty_range}",
+    f"  max_init_terrain_level: {terrain.max_init_terrain_level}",
+    "  proportions:",
+  ]
+  for name, proportion in zip(names, proportions, strict=True):
+    lines.append(f"    {name}: {proportion:.6f}")
+
+  lines.append("  column_assignment:")
+  for col, name in enumerate(_terrain_column_assignment(generator, names, cumulative)):
+    lines.append(f"    col {col:02d}: {name}")
+  return "\n".join(lines)
+
+
+def _terrain_column_assignment(generator, names: list[str], cumulative: np.ndarray) -> list[str]:
+  column_names = []
+  for col in range(generator.num_cols):
+    if generator.curriculum:
+      index = int(np.min(np.where(col / generator.num_cols + 0.001 < cumulative)[0]))
+      column_names.append(names[index])
+    else:
+      column_names.append("random_weighted_sample")
+  return column_names
+
+
+def _format_initial_terrain_distribution(
+  env: ManagerBasedRlEnv, env_cfg: ManagerBasedRlEnvCfg
+) -> str | None:
+  terrain = env.scene.terrain
+  terrain_cfg = env_cfg.scene.terrain
+  if terrain is None or terrain_cfg is None or terrain_cfg.terrain_generator is None:
+    return None
+  if not hasattr(terrain, "terrain_types") or not hasattr(terrain, "terrain_levels"):
+    return None
+
+  generator = terrain_cfg.terrain_generator
+  names = list(generator.sub_terrains.keys())
+  proportions = np.array(
+    [generator.sub_terrains[name].proportion for name in names], dtype=np.float64
+  )
+  proportions /= np.sum(proportions)
+  column_names = _terrain_column_assignment(generator, names, np.cumsum(proportions))
+
+  terrain_types = terrain.terrain_types.detach().cpu().numpy()
+  terrain_levels = terrain.terrain_levels.detach().cpu().numpy()
+  col_counts = np.bincount(terrain_types, minlength=generator.num_cols)
+  level_counts = np.bincount(terrain_levels, minlength=generator.num_rows)
+  terrain_name_counts: dict[str, int] = {}
+  for col, count in enumerate(col_counts):
+    name = column_names[col] if col < len(column_names) else f"col_{col:02d}"
+    terrain_name_counts[name] = terrain_name_counts.get(name, 0) + int(count)
+
+  lines = [
+    "Initial terrain env distribution",
+    f"  num_envs: {env.num_envs}",
+    "  by_terrain:",
+  ]
+  for name, count in terrain_name_counts.items():
+    lines.append(f"    {name}: {count}")
+  lines.append("  by_column:")
+  for col, count in enumerate(col_counts):
+    lines.append(f"    col {col:02d} ({column_names[col]}): {int(count)}")
+  lines.append("  by_level:")
+  for level, count in enumerate(level_counts):
+    lines.append(f"    level {level:02d}: {int(count)}")
+  return "\n".join(lines)
 
 
 @dataclass(frozen=True)
@@ -92,10 +181,23 @@ def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
 
   if rank == 0:
     print(f"[INFO] Logging experiment in directory: {log_dir}")
+    terrain_layout = _format_terrain_layout(cfg.env)
+    if terrain_layout is not None:
+      print(f"[INFO] {terrain_layout}")
+      log_dir.mkdir(parents=True, exist_ok=True)
+      (log_dir / "terrain_layout.txt").write_text(terrain_layout + "\n")
 
   env = ManagerBasedRlEnv(
     cfg=cfg.env, device=device, render_mode="rgb_array" if cfg.video else None
   )
+  if rank == 0:
+    terrain_distribution = _format_initial_terrain_distribution(env, cfg.env)
+    if terrain_distribution is not None:
+      print(f"[INFO] {terrain_distribution}")
+      log_dir.mkdir(parents=True, exist_ok=True)
+      (log_dir / "terrain_distribution_initial.txt").write_text(
+        terrain_distribution + "\n"
+      )
 
   log_root_path = log_dir.parent  # Go up from specific run dir to experiment dir.
 

@@ -276,8 +276,11 @@ def feet_near_terrain_edge(
 ) -> torch.Tensor:
   """Approximate old edge-awareness by comparing feet to sharp height-scan cells."""
   sensor: RayCastSensor = env.scene[sensor_name]
-  heights = sensor.data.frame_pos_w[:, :, 2:3] - sensor.data.hit_pos_w[..., 2].view(
-    env.num_envs, sensor.num_frames, sensor.num_rays_per_frame
+  num_frames = getattr(sensor, "num_frames", 1)
+  num_rays_per_frame = getattr(sensor, "num_rays_per_frame", sensor.num_rays)
+  frame_pos_w = getattr(sensor.data, "frame_pos_w", sensor.data.pos_w.unsqueeze(1))
+  heights = frame_pos_w[:, :, 2:3] - sensor.data.hit_pos_w[..., 2].view(
+    env.num_envs, num_frames, num_rays_per_frame
   )
   heights = heights.view(env.num_envs, *scan_shape)
 
@@ -288,9 +291,9 @@ def feet_near_terrain_edge(
   edge_mask[:, :, :-1] |= torch.abs(heights[:, :, 1:] - heights[:, :, :-1]) > edge_threshold
 
   edge_points = sensor.data.hit_pos_w.view(
-    env.num_envs, sensor.num_frames, sensor.num_rays_per_frame, 3
+    env.num_envs, num_frames, num_rays_per_frame, 3
   )[:, 0, :, :2]
-  edge_mask_flat = edge_mask.reshape(env.num_envs, sensor.num_rays_per_frame)
+  edge_mask_flat = edge_mask.reshape(env.num_envs, num_rays_per_frame)
   edge_points = torch.where(
     edge_mask_flat.unsqueeze(-1),
     edge_points,

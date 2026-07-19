@@ -204,7 +204,7 @@ class CenteredHfRandomUniformTerrainCfg(terrain_gen.HfRandomUniformTerrainCfg):
 
 
 def make_a2_locoscan_terrain_cfg() -> TerrainGeneratorCfg:
-  """Create a terrain mix matching the legacy A2 LocoScan proportions."""
+  """Create an all-rough curriculum terrain for A2 LocoScan diagnosis."""
   return TerrainGeneratorCfg(
     curriculum=True,
     size=(8.0, 8.0),
@@ -213,57 +213,13 @@ def make_a2_locoscan_terrain_cfg() -> TerrainGeneratorCfg:
     num_rows=10,
     num_cols=20,
     sub_terrains={
-      "hf_pyramid_slope_inv": terrain_gen.HfPyramidSlopedTerrainCfg(
-        proportion=0.1,
-        slope_range=(0.0, 0.6),
-        platform_width=3.0,
-        border_width=0.2,
-        horizontal_scale=0.1,
-        inverted=True,
-      ),
-      "hf_pyramid_slope": terrain_gen.HfPyramidSlopedTerrainCfg(
-        proportion=0.1,
-        slope_range=(0.0, 0.6),
-        platform_width=3.0,
-        border_width=0.2,
-        horizontal_scale=0.1,
-      ),
       "random_rough": CenteredHfRandomUniformTerrainCfg(
-        proportion=0.15,
+        proportion=1.0,
         noise_range=(-0.05, 0.05),
         noise_step=0.005,
         downsampled_scale=0.2,
         border_width=0.0,
         horizontal_scale=0.1,
-      ),
-      "pyramid_stairs": terrain_gen.BoxPyramidStairsTerrainCfg(
-        proportion=0.2,
-        step_height_range=(0.05, 0.23),
-        step_width=0.35,
-        platform_width=3.0,
-      ),
-      "pyramid_stairs_inv": terrain_gen.BoxInvertedPyramidStairsTerrainCfg(
-        proportion=0.2,
-        step_height_range=(0.05, 0.23),
-        step_width=0.35,
-        platform_width=3.0,
-      ),
-      "discrete_obstacles": terrain_gen.HfDiscreteObstaclesTerrainCfg(
-        proportion=0.15,
-        obstacle_height_mode="fixed",
-        obstacle_width_range=(1.0, 2.0),
-        obstacle_height_range=(0.05, 0.2),
-        num_obstacles=20,
-        platform_width=3.0,
-        border_width=0.2,
-        horizontal_scale=0.1,
-      ),
-      # Approximate the legacy "wide step" terrain with wider pyramid stairs.
-      "wide_step_proxy": terrain_gen.BoxPyramidStairsTerrainCfg(
-        proportion=0.1,
-        step_height_range=(0.1, 0.3),
-        step_width=0.9,
-        platform_width=2.0,
       ),
     },
     add_lights=True,
@@ -278,6 +234,7 @@ def unitree_a2_rough_env_cfg(
 
   cfg.sim.mujoco.ccd_iterations = 500
   cfg.sim.contact_sensor_maxmatch = 500
+  cfg.sim.nconmax = 256
 
   cfg.scene.entities = {"robot": get_a2_robot_cfg()}
 
@@ -452,9 +409,31 @@ def unitree_a2_locoscan_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   assert cfg.scene.terrain is not None
   cfg.scene.terrain.terrain_type = "generator"
   cfg.scene.terrain.terrain_generator = make_a2_locoscan_terrain_cfg()
-  cfg.scene.terrain.max_init_terrain_level = 2
+  cfg.scene.terrain.max_init_terrain_level = 0
   cfg.sim.mujoco.ccd_iterations = 50
   cfg.sim.nconmax = 256
+  cfg.events.pop("push_robot", None)
+  if "base_com" in cfg.events:
+    cfg.events["base_com"].params["ranges"] = {
+      0: (-0.03, 0.03),
+      1: (-0.03, 0.03),
+      2: (-0.03, 0.03),
+    }
+
+  base_ground_cfg = ContactSensorCfg(
+    name="base_ground_contact",
+    primary=ContactMatch(mode="body", pattern="base_link", entity="robot"),
+    secondary=ContactMatch(mode="body", pattern="terrain"),
+    fields=("found", "force"),
+    reduce="none",
+    num_slots=1,
+    history_length=4,
+  )
+  cfg.scene.sensors = (cfg.scene.sensors or ()) + (base_ground_cfg,)
+  cfg.terminations["illegal_contact"] = TerminationTermCfg(
+    func=mdp.illegal_contact,
+    params={"sensor_name": base_ground_cfg.name, "force_threshold": 10.0},
+  )
 
   for sensor in cfg.scene.sensors or ():
     if sensor.name == "terrain_scan":
@@ -568,17 +547,17 @@ def unitree_a2_locoscan_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg.rewards["joint_acc_l2"].weight = -2.5e-7
   cfg.rewards["action_rate_l2"].weight = -0.02
   cfg.rewards["foot_gait"].weight = 1.0
-  cfg.rewards["foot_clearance"].weight = 0.2
+  cfg.rewards["foot_clearance"].weight = -1.0
   cfg.rewards["foot_clearance"].func = mdp.feet_clearance
-  cfg.rewards["foot_clearance"].params["target_height"] = 0.07
+  cfg.rewards["foot_clearance"].params["target_height"] = 0.10
   cfg.rewards["foot_clearance"].params["asset_cfg"].site_names = site_names
   cfg.rewards["foot_slip"].weight = -0.05
-  cfg.rewards["soft_landing"].weight = -0.1
+  cfg.rewards["soft_landing"].weight = 0.0
   cfg.rewards["stand_still"].weight = -0.2
   cfg.rewards["pose"].weight = 0.0
   cfg.rewards["angular_momentum"].weight = 0.0
   cfg.rewards["joint_pos_limits"].weight = 0.0
-  cfg.rewards["is_terminated"].weight = 0.0
+  cfg.rewards["is_terminated"].weight = -200.0
 
   cfg.rewards["base_height_exp"] = RewardTermCfg(
     func=mdp.base_height_exp,
@@ -611,12 +590,12 @@ def unitree_a2_locoscan_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   )
   cfg.rewards["feet_stumble_swing"] = RewardTermCfg(
     func=mdp.feet_stumble_swing,
-    weight=-2.0,
+    weight=0.0,
     params={"sensor_name": "feet_ground_contact"},
   )
   cfg.rewards["feet_near_terrain_edge_new"] = RewardTermCfg(
     func=mdp.feet_near_terrain_edge,
-    weight=-1.0,
+    weight=0.0,
     params={
       "sensor_name": "terrain_scan",
       "asset_cfg": SceneEntityCfg("robot", site_names=site_names),

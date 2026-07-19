@@ -62,6 +62,30 @@ git clone https://github.com/unitreerobotics/unitree_rl_mjlab.git
 sudo apt install -y libyaml-cpp-dev libboost-all-dev libeigen3-dev libspdlog-dev libfmt-dev
 ```
 
+### 2.3 Install PyTorch
+
+If `nvidia-smi` reports `CUDA Version: 12.8`, install the CUDA 12.8 PyTorch
+wheels first to avoid an NVIDIA driver and PyTorch CUDA runtime mismatch:
+
+```bash
+python -m pip install torch==2.11.0 torchvision==0.26.0 torchaudio==2.11.0 --index-url https://download.pytorch.org/whl/cu128
+```
+
+Verify that CUDA is available after installation:
+
+```bash
+python - <<'PY'
+import torch
+print("torch", torch.__version__)
+print("torch cuda", torch.version.cuda)
+print("cuda available", torch.cuda.is_available())
+PY
+```
+
+The expected output should include `torch cuda 12.8` and `cuda available True`.
+
+### 2.4 Install the Project
+
 All other dependencies are specified in the setup.py file.
 Navigate to the project root directory and install them with:
 

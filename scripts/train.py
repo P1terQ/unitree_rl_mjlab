@@ -8,6 +8,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal, cast
 
+os.environ.setdefault("MUJOCO_GL", "egl")
+
 import numpy as np
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -270,7 +272,7 @@ def launch_training(task_id: str, args: TrainConfig | None = None):
     os.environ["CUDA_VISIBLE_DEVICES"] = ""
   else:
     os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(map(str, selected_gpus))
-  os.environ["MUJOCO_GL"] = "egl"
+  os.environ.setdefault("MUJOCO_GL", "egl")
 
   if num_gpus <= 1:
     # CPU or single GPU: run directly without torchrunx.

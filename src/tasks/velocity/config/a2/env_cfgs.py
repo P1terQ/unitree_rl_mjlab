@@ -204,7 +204,7 @@ class CenteredHfRandomUniformTerrainCfg(terrain_gen.HfRandomUniformTerrainCfg):
 
 
 def make_a2_locoscan_terrain_cfg() -> TerrainGeneratorCfg:
-  """Create the staged curriculum terrain for A2 LocoScan."""
+  """Create the full IsaacGym-style curriculum terrain for A2 LocoScan."""
   return TerrainGeneratorCfg(
     curriculum=True,
     size=(8.0, 8.0),
@@ -213,40 +213,56 @@ def make_a2_locoscan_terrain_cfg() -> TerrainGeneratorCfg:
     num_rows=10,
     num_cols=20,
     sub_terrains={
-      "random_rough": CenteredHfRandomUniformTerrainCfg(
-        proportion=0.6,
-        noise_range=(-0.05, 0.05),
-        noise_step=0.005,
-        downsampled_scale=0.2,
-        border_width=0.0,
-        horizontal_scale=0.1,
-      ),
       "hf_pyramid_slope": terrain_gen.HfPyramidSlopedTerrainCfg(
-        proportion=0.1,
+        proportion=0.075,
         slope_range=(0.0, 0.6),
         platform_width=2.0,
         border_width=0.0,
         horizontal_scale=0.1,
       ),
       "hf_pyramid_slope_inv": terrain_gen.HfPyramidSlopedTerrainCfg(
-        proportion=0.1,
+        proportion=0.075,
         slope_range=(0.0, 0.6),
         platform_width=2.0,
         inverted=True,
         border_width=0.0,
         horizontal_scale=0.1,
       ),
+      "random_rough": CenteredHfRandomUniformTerrainCfg(
+        proportion=0.15,
+        noise_range=(-0.1, 0.1),
+        noise_step=0.005,
+        downsampled_scale=0.2,
+        border_width=0.0,
+        horizontal_scale=0.1,
+      ),
       "pyramid_stairs": terrain_gen.BoxPyramidStairsTerrainCfg(
-        proportion=0.1,
-        step_height_range=(0.0, 0.2),
+        proportion=0.2,
+        step_height_range=(0.05, 0.23),
         step_width=0.3,
         platform_width=2.0,
         border_width=0.0,
       ),
       "pyramid_stairs_inv": terrain_gen.BoxInvertedPyramidStairsTerrainCfg(
-        proportion=0.1,
-        step_height_range=(0.0, 0.2),
+        proportion=0.2,
+        step_height_range=(0.05, 0.23),
         step_width=0.3,
+        platform_width=2.0,
+        border_width=0.0,
+      ),
+      "discrete_obstacles": terrain_gen.HfDiscreteObstaclesTerrainCfg(
+        proportion=0.2,
+        obstacle_width_range=(1.0, 2.0),
+        obstacle_height_range=(0.05, 0.2),
+        num_obstacles=20,
+        platform_width=2.0,
+        border_width=0.0,
+        horizontal_scale=0.1,
+      ),
+      "wide_step_proxy": terrain_gen.BoxPyramidStairsTerrainCfg(
+        proportion=0.1,
+        step_height_range=(0.1, 0.3),
+        step_width=1.0,
         platform_width=2.0,
         border_width=0.0,
       ),

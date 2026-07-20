@@ -204,7 +204,7 @@ class CenteredHfRandomUniformTerrainCfg(terrain_gen.HfRandomUniformTerrainCfg):
 
 
 def make_a2_locoscan_terrain_cfg() -> TerrainGeneratorCfg:
-  """Create an all-rough curriculum terrain for A2 LocoScan diagnosis."""
+  """Create the staged curriculum terrain for A2 LocoScan."""
   return TerrainGeneratorCfg(
     curriculum=True,
     size=(8.0, 8.0),
@@ -214,12 +214,41 @@ def make_a2_locoscan_terrain_cfg() -> TerrainGeneratorCfg:
     num_cols=20,
     sub_terrains={
       "random_rough": CenteredHfRandomUniformTerrainCfg(
-        proportion=1.0,
+        proportion=0.6,
         noise_range=(-0.05, 0.05),
         noise_step=0.005,
         downsampled_scale=0.2,
         border_width=0.0,
         horizontal_scale=0.1,
+      ),
+      "hf_pyramid_slope": terrain_gen.HfPyramidSlopedTerrainCfg(
+        proportion=0.1,
+        slope_range=(0.0, 0.6),
+        platform_width=2.0,
+        border_width=0.0,
+        horizontal_scale=0.1,
+      ),
+      "hf_pyramid_slope_inv": terrain_gen.HfPyramidSlopedTerrainCfg(
+        proportion=0.1,
+        slope_range=(0.0, 0.6),
+        platform_width=2.0,
+        inverted=True,
+        border_width=0.0,
+        horizontal_scale=0.1,
+      ),
+      "pyramid_stairs": terrain_gen.BoxPyramidStairsTerrainCfg(
+        proportion=0.1,
+        step_height_range=(0.0, 0.2),
+        step_width=0.3,
+        platform_width=2.0,
+        border_width=0.0,
+      ),
+      "pyramid_stairs_inv": terrain_gen.BoxInvertedPyramidStairsTerrainCfg(
+        proportion=0.1,
+        step_height_range=(0.0, 0.2),
+        step_width=0.3,
+        platform_width=2.0,
+        border_width=0.0,
       ),
     },
     add_lights=True,

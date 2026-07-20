@@ -121,8 +121,8 @@ class TrainConfig:
   agent: RslRlBaseRunnerCfg
   motion_file: str | None = None
   video: bool = False
-  video_length: int = 200
-  video_interval: int = 2000
+  video_length: int = 400
+  video_interval: int = 10000
   enable_nan_guard: bool = False
   torchrunx_log_dir: str | None = None
   gpu_ids: list[int] | Literal["all"] | None = field(default_factory=lambda: [0])
@@ -183,6 +183,14 @@ def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
   if cfg.enable_nan_guard:
     cfg.env.sim.nan_guard.enabled = True
     print(f"[INFO] NaN guard enabled, output dir: {cfg.env.sim.nan_guard.output_dir}")
+
+  if cfg.video and rank == 0:
+    cfg.env.viewer.distance = max(cfg.env.viewer.distance, 8.0)
+    cfg.env.viewer.elevation = -35.0
+    cfg.env.viewer.azimuth = 90.0
+    cfg.env.viewer.max_extra_envs = 31
+    cfg.env.viewer.width = max(cfg.env.viewer.width, 640)
+    cfg.env.viewer.height = max(cfg.env.viewer.height, 480)
 
   if rank == 0:
     print(f"[INFO] Logging experiment in directory: {log_dir}")
